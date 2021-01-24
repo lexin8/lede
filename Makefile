@@ -1,125 +1,142 @@
-# Makefile for OpenWrt
 #
-# Copyright (C) 2007 OpenWrt.org
+# Copyright (C) 2019-2020 Xingwang Liao
+# Copyright (C) 2020-2021 Mattraks
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
 #
 
-TOPDIR:=${CURDIR}
-LC_ALL:=C
-LANG:=C
-TZ:=UTC
-export TOPDIR LC_ALL LANG TZ
+include $(TOPDIR)/rules.mk
 
-empty:=
-space:= $(empty) $(empty)
-$(if $(findstring $(space),$(TOPDIR)),$(error ERROR: The path to the OpenWrt directory must not include any spaces))
+PKG_NAME:=xray
+PKG_VERSION:=1.2.3
+PKG_RELEASE:=1
+PKG_BUILD_DIR:=$(BUILD_DIR)/Xray-core-$(PKG_VERSION)
 
-world:
+PKG_SOURCE:=xray-core-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/XTLS/xray-core/tar.gz/v$(PKG_VERSION)?
+PKG_HASH:=1deed281d2b976c0132b57194a09b62a1b978ec1b35d8329894b80f8d47befb7
 
-DISTRO_PKG_CONFIG:=$(shell which -a pkg-config | grep -E '\/usr' | head -n 1)
-export PATH:=$(TOPDIR)/staging_dir/host/bin:$(PATH)
+PKG_LICENSE:=MPL
+PKG_LICENSE_FILES:=LICENSE
 
-ifneq ($(OPENWRT_BUILD),1)
-  _SINGLE=export MAKEFLAGS=$(space);
+PKG_CONFIG_DEPENDS:= \
+	CONFIG_XRAY_EXCLUDE_ASSETS \
+	CONFIG_XRAY_COMPRESS_GOPROXY \
+	CONFIG_XRAY_COMPRESS_UPX \
+	CONFIG_XRAY_COMPATIBILITY_MODE
 
-  override OPENWRT_BUILD=1
-  export OPENWRT_BUILD
-  GREP_OPTIONS=
-  export GREP_OPTIONS
-  CDPATH=
-  export CDPATH
-  include $(TOPDIR)/include/debug.mk
-  include $(TOPDIR)/include/depends.mk
-  include $(TOPDIR)/include/toplevel.mk
-else
-  include rules.mk
-  include $(INCLUDE_DIR)/depends.mk
-  include $(INCLUDE_DIR)/subdir.mk
-  include target/Makefile
-  include package/Makefile
-  include tools/Makefile
-  include toolchain/Makefile
+PKG_BUILD_DEPENDS:=golang/host
+PKG_BUILD_PARALLEL:=1
+PKG_USE_MIPS16:=0
 
-$(toolchain/stamp-compile): $(tools/stamp-compile)
-$(target/stamp-compile): $(toolchain/stamp-compile) $(tools/stamp-compile) $(BUILD_DIR)/.prepared
-$(package/stamp-compile): $(target/stamp-compile) $(package/stamp-cleanup)
-$(package/stamp-install): $(package/stamp-compile)
-$(target/stamp-install): $(package/stamp-compile) $(package/stamp-install)
-check: $(tools/stamp-check) $(toolchain/stamp-check) $(package/stamp-check)
+GO_PKG:=github.com/xtls/xray-core
+GO_PKG_LDFLAGS:=-s -w
+GO_PKG_LDFLAGS_X:= \
+	$(GO_PKG)/core.version=$(PKG_VERSION) \
+	$(GO_PKG)/core.codename=OpenWrt
 
-printdb:
-	@true
+include $(INCLUDE_DIR)/package.mk
+include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-prepare: $(target/stamp-compile)
+define Package/$(PKG_NAME)
+  TITLE:=A platform for building proxies
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=Project X
+  DEPENDS:=$(GO_ARCH_DEPENDS) +ca-certificates
+#  PROVIDES:=v2ray
+endef
 
-clean: FORCE
-	rm -rf $(BUILD_DIR) $(STAGING_DIR) $(BIN_DIR) $(OUTPUT_DIR)/packages/$(ARCH_PACKAGES) $(BUILD_LOG_DIR) $(TOPDIR)/staging_dir/packages
+define Package/$(PKG_NAME)/description
+Project X originates from XTLS protocol, provides a set of network tools such as Xray-core and Xray-flutter.
+It secures your network connections and thus protects your privacy.
 
-dirclean: clean
-	rm -rf $(STAGING_DIR_HOST) $(STAGING_DIR_HOSTPKG) $(TOOLCHAIN_DIR) $(BUILD_DIR_BASE)/host $(BUILD_DIR_BASE)/hostpkg $(BUILD_DIR_TOOLCHAIN)
-	rm -rf $(TMP_DIR)
-	$(MAKE) -C $(TOPDIR)/scripts/config clean
+  This package contains Xray, geoip.dat and geosite.dat.
+endef
 
-ifndef DUMP_TARGET_DB
-$(BUILD_DIR)/.prepared: Makefile
-	@mkdir -p $$(dirname $@)
-	@touch $@
+define Package/$(PKG_NAME)/config
+menu "Xray Configuration"
+	depends on PACKAGE_xray
 
-tmp/.prereq_packages: .config
-	unset ERROR; \
-	for package in $(sort $(prereq-y) $(prereq-m)); do \
-		$(_SINGLE)$(NO_TRACE_MAKE) -s -r -C package/$$package prereq || ERROR=1; \
-	done; \
-	if [ -n "$$ERROR" ]; then \
-		echo "Package prerequisite check failed."; \
-		false; \
-	fi
-	touch $@
+config XRAY_COMPRESS_GOPROXY
+	bool "Compiling with GOPROXY proxy"
+	default n
+
+config XRAY_EXCLUDE_ASSETS
+	bool "Exclude geoip.dat & geosite.dat"
+	default y
+
+config XRAY_COMPRESS_UPX
+	bool "Compress executable files with UPX"
+	default y
+
+config XRAY_COMPATIBILITY_MODE
+	bool "V2ray Compatibility mode(v2ray soft connection Xray)"
+	default n
+endmenu
+endef
+
+ifeq ($(CONFIG_XRAY_COMPRESS_GOPROXY),y)
+export GO111MODULE=on
+export GOPROXY=https://goproxy.io
+#export GOPROXY=https://mirrors.aliyun.com/goproxy/
 endif
 
-# check prerequisites before starting to build
-prereq: $(target/stamp-prereq) tmp/.prereq_packages
-	@if [ ! -f "$(INCLUDE_DIR)/site/$(ARCH)" ]; then \
-		echo 'ERROR: Missing site config for architecture "$(ARCH)" !'; \
-		echo '       The missing file will cause configure scripts to fail during compilation.'; \
-		echo '       Please provide a "$(INCLUDE_DIR)/site/$(ARCH)" file and restart the build.'; \
-		exit 1; \
-	fi
+GEOIP_VER:=latest
+GEOIP_FILE:=geoip-$(GEOIP_VER).dat
 
-$(BIN_DIR)/profiles.json: FORCE
-	$(if $(CONFIG_JSON_OVERVIEW_IMAGE_INFO), \
-		WORK_DIR=$(BUILD_DIR)/json_info_files \
-			$(SCRIPT_DIR)/json_overview_image_info.py $@ \
-	)
+define Download/geoip.dat
+  URL:=https://github.com/v2fly/geoip/releases/$(GEOIP_VER)/download
+  URL_FILE:=geoip.dat
+  FILE:=$(GEOIP_FILE)
+  HASH:=skip
+endef
 
-json_overview_image_info: $(BIN_DIR)/profiles.json
+GEOSITE_VER:=latest
+GEOSITE_FILE:=geosite-$(GEOSITE_VER).dat
 
-checksum: FORCE
-	$(call sha256sums,$(BIN_DIR),$(CONFIG_BUILDBOT))
+define Download/geosite.dat
+  URL:=https://github.com/v2fly/domain-list-community/releases/$(GEOSITE_VER)/download
+  URL_FILE:=dlc.dat
+  FILE:=$(GEOSITE_FILE)
+  HASH:=skip
+endef
 
-buildversion: FORCE
-	$(SCRIPT_DIR)/getver.sh > $(BIN_DIR)/version.buildinfo
-
-feedsversion: FORCE
-	$(SCRIPT_DIR)/feeds list -fs > $(BIN_DIR)/feeds.buildinfo
-
-diffconfig: FORCE
-	mkdir -p $(BIN_DIR)
-	$(SCRIPT_DIR)/diffconfig.sh > $(BIN_DIR)/config.buildinfo
-
-buildinfo: FORCE
-	$(_SINGLE)$(SUBMAKE) -r diffconfig buildversion feedsversion
-
-prepare: .config $(tools/stamp-compile) $(toolchain/stamp-compile)
-	$(_SINGLE)$(SUBMAKE) -r buildinfo
-
-world: prepare $(target/stamp-compile) $(package/stamp-compile) $(package/stamp-install) $(target/stamp-install) FORCE
-	$(_SINGLE)$(SUBMAKE) -r package/index
-	$(_SINGLE)$(SUBMAKE) -r json_overview_image_info
-	$(_SINGLE)$(SUBMAKE) -r checksum
-
-.PHONY: clean dirclean prereq prepare world package/symlinks package/symlinks-install package/symlinks-clean
-
+define Build/Prepare
+	$(call Build/Prepare/Default)
+ifneq ($(CONFIG_XRAY_EXCLUDE_ASSETS),y)
+	# move file to make sure download new file every build
+	mv -f $(DL_DIR)/$(GEOIP_FILE) $(PKG_BUILD_DIR)/geoip.dat
+	mv -f $(DL_DIR)/$(GEOSITE_FILE) $(PKG_BUILD_DIR)/geosite.dat
 endif
+endef
+
+define Build/Compile
+	$(eval GO_PKG_BUILD_PKG:=$(GO_PKG)/main)
+	$(call GoPackage/Build/Compile)
+	mv -f $(GO_PKG_BUILD_BIN_DIR)/main $(GO_PKG_BUILD_BIN_DIR)/xray
+ifeq ($(CONFIG_XRAY_COMPRESS_UPX),y)
+	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/xray || true
+endif
+endef
+
+define Package/$(PKG_NAME)/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/xray $(1)/usr/bin
+ifeq ($(CONFIG_XRAY_COMPATIBILITY_MODE),y)
+	$(LN) xray $(1)/usr/bin/v2ray
+endif
+ifneq ($(CONFIG_XRAY_EXCLUDE_ASSETS),y)
+	$(INSTALL_DIR) $(1)/usr/share/xray
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/{geoip,geosite}.dat $(1)/usr/share/xray
+endif
+endef
+
+ifneq ($(CONFIG_XRAY_EXCLUDE_ASSETS),y)
+$(eval $(call Download,geoip.dat))
+$(eval $(call Download,geosite.dat))
+endif
+
+$(eval $(call GoBinPackage,$(PKG_NAME)))
+$(eval $(call BuildPackage,$(PKG_NAME)))
